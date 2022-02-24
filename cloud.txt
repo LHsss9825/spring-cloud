@@ -1,0 +1,174 @@
+消费者与服务者的关系：
+服务者提供者：暴露接口给其他服务者（user）
+服务消费者：调用其他服务提供的接口（order）
+提供者与消费者的角色是相对的
+-------------------------------- 一 、 Eureka注册中心 ------------------------------------
+
+1、 服务调用出现的问题:
+  order与user调用时出现硬编码
+  消费者如何知道提供者的地址信息？
+  有多个服务者该如何选择？
+  消费者如何知道提供者的健康状态？
+
+ 2、Eureka的作用？
+                                 eureka-service
+                                     注册中心
+
+
+
+   order-service                                               user-service
+        8080                                                       8081
+
+                                                       user-service              user-service
+       消费者                                                8082                   8083
+                              eureka-client（eureka客户端）              提供者
+
+
+
+(1) 提供者会将自身所有的信息提供给eureka注册中心。当消费者想使用服务者信息时，从eureka注册中心调用就行
+(2) 在eureka向消费者提供服务者的信息时，使用负载均衡平均分配
+(3) 提供者每30秒会向eureka发送心跳请求，一但不发送eureka会将不发送信息的服务者从列表剔除（又叫检测监控健康状态）
+
+3、服务注册：
+(1)引入eureka-client依赖
+（2）在application.yml中配置eureka的地址
+
+4、服务拉取
+(1)、修改orderService中的代码，修改访问url的路径，用服务代替端口、ip：
+
+  String url ="http://userservice/user/" + order.getUserId();
+
+(2)、在order-service项目中启动OrderApplication的RestTemplate的负载均衡注解：
+         @LoadBalanced
+
+
+-----------------------------------------------------------------------------
+                                 Ribbon负载均衡
+
+ order-service：-->1.发起请求（http://userservice/user/1）,----->Ribbon(负载均衡) --->2.拉取userserver（eureka-server ）-
+ ------>3.返回服务列表：localhost:8081   localhost:8081
+
+ 在      @LoadBalanced中有LoadBalancerInterceptor方法，他继承了ClientHttpRequestInterceptor接口，在LoadBalancerInterceptor中（包含了Ribbon）
+ 实现负载均衡
+
+------------------------------------------------------------------------
+                                   IRule接口
+IRule是Ribbon的核心接口
+IRule的接口，每一个子接口就是一种规则
+
+修改负载均衡的规则：
+（全局配置）
+1、代码方式：在order-service中的Application类中定义一个新的IRule：
+ @Bean
+    public IRule randomRule(){
+        return new RandomRule();
+    }
+  (局部配置)
+2、配置文件方式：userservice: # 给某个微服务配置负载均衡规则，这里是userservice服务
+  ribbon:
+    NFLoadBalancerRuleClassName: com.netflix.loadbalancer.RandomRule # 负载均衡规则
+
+
+-----------------------------------------------------------------------------
+                               Ribbon-->饥饿加载
+1、懒加载
+Ribbon默认加载为懒加载:
+即：第一次加载时间长，以后再次加载耗时加就缩短
+2、饥饿加载：
+饥饿加载会在项目启动时加载，降低第一次访问时的耗时，配置为：
+ribbon:
+  eager-load:
+    enabled: true  #开启饥饿加载
+    clients:          #指定userservice这个服务进行饥饿加载
+      -userservice
+      -xxxxservice
+
+--------------------------- 二、Nacos注册中心 --------------------------------------------
+
+  1、Nacos是阿里的产品
+  2、nacos的部署：
+  在父工程中导入依赖：
+    <dependency>
+                  <groupId>com.alibaba.cloud</groupId>
+                  <artifactId>spring-cloud-alibaba-dependencies</artifactId>
+                  <version>2.2.6.RELEASE</version>
+                  <type>pom</type>
+                  <scope>import</scope>
+              </dependency>
+在消费者（order）和提供者（user）中导入依赖并更改yml文件配置
+ <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+            <version> 2.2.6.RELEASE</version>
+        </dependency>
+      导入依赖时一定要注意版本号！！！！
+
+      配置文件：
+      spring
+        cloud:
+          nacos:
+            server-addr: localhost:8848
+      （注意：eureka的地址要注销）
+
+----------------------------------------------------------------------------------------------------------------
+                                   服务多级储存模型
+nacos服务分级属性储存模型：
+（1）一级是服务：例如userservice
+（1）二级是集群：例如杭州或者是上海
+（3）三级是实例：例如在杭州的服务器上的部署了某台userservice的服务器
+
+
+配置服务集群属性：
+ 在提供者（user）的配置文件中设置：
+      discovery:
+        cluster-name: HZ ：杭州   （名称自定义）
+
+在消费者（order）的配置文件中设置同一地区集群之间的访问（例如：HZ只能调用HZ访问）
+userservice:
+  ribbon:
+    NFLoadBalancerRuleClassName: com.alibaba.cloud.nacos.ribbon.NacosRule # 负载均衡规则
+
+--------------------------------------------------------------------------------------------
+                          服务实例的权重设置（根据性能分配访问量）
+在Nacos控制台编辑权重值：权重值越小访问值越小
+当权重为零时，他就不会被访问（当升级系统时，可以先调整一个集群的权重，保证服务不会挂掉）
+
+----------------------------------------------------------------------------------------------------
+                                环境隔离
+
+namespace:
+在Nacos中服务和数据的外层都是被一个叫namespace的东西，用来做最外层隔离
+
+在Nacos控制台新建一个空间，将其随机生成的ID复制到任意（提供者，消费者都可）的配置文件中，那么他就移到该空间里去了
+  cloud:
+    nacos:
+      server-addr: localhost:8848
+      discovery:
+        cluster-name: HZ
+        namespace: ab92eabd-81c6-4af7-94f1-99dbecf4383b
+
+---------------------Eureka和Nacos的对比-------------------------------
+
+配置一个服务实例为永久实例：
+
+在消费者（order）.yaml中配置
+spring:
+  cloud:
+    nacos:
+      discovery:
+        ephemeral: false # 设置为非临时实例（默认为true 临时实例）
+```
+
+
+
+- Nacos与eureka的共同点
+  - 都支持服务注册和服务拉取
+  - 都支持服务提供者心跳方式做健康检测
+
+- Nacos与Eureka的区别
+  - Nacos支持服务端主动检测提供者状态：临时实例采用心跳模式，非临时实例采用主动检测模式
+  - 临时实例心跳不正常会被剔除，非临时实例则不会被剔除
+  - Nacos支持服务列表变更的消息推送模式，服务列表更新更及时
+  - Nacos集群默认采用AP方式，当集群中存在非临时实例时，采用CP模式；Eureka采用AP方式
+
+主动检测会服务器造成太大压力，不建议使用
